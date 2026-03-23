@@ -13,8 +13,8 @@
    autosomes = max_depth_autosomes * 2
    sex chromosomes = max_depth_sexchromosomes * 2
    * MINIMUM:
-   autosomes = mean_depth_autosomes - 2SD of depth OR 5 whichever is bigger
-   sex chromosomes = mean_depth_sex - 2SD of depth_sex OR 5 whichever is bigger
+   autosomes = min_depth_sex * 2 OR 5 whichever is bigger
+   sex chromosomes = min_depth_sex * 0.5 OR 5 whichever is bigger
 4. Print statistics after each iteration to see how much we are reducing reference bias
    * Allele balance at het sites — should approach 0.5 as reference bias disappears
    * Spread of heterozygosity for ref/alt; tight distribution around 0.5 = unbiased
