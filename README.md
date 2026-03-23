@@ -2,6 +2,30 @@
 **v0.1**
 [TOC]
 
+## Changes
+1. Runs as many iterations as needed. 
+   Requires: Nextflow 22.10+ for repeated process invocations in one workflow
+2. The intermediate round filtering differs from the final round:
+* Intermediate rounds build a true consensus (mosaic of 2 different genome) - filter vcf for SNPs that pass depth/imbalance filter, pick the best supported/dominant heterozygous allele (AF >= 0.5), sites with no passed SNPs use the reference allele
+* Last round, only calls (variant + non-variant) that pass the filters will be used, other sites are masked as missing data. Mask or keep heterozygous sites (if kept chooses dominant allele with AF > 0.5). Keep or filter indels.
+3. Depth threshold variance. The depth threshold will be calculated from the sample 
+   * MAXIMUM:
+   autosomes = max_depth_autosomes * 2
+   sex chromosomes = max_depth_sexchromosomes * 2
+   * MINIMUM:
+   autosomes = mean_depth_autosomes - 2SD of depth OR 5 whichever is bigger
+   sex chromosomes = mean_depth_sex - 2SD of depth_sex OR 5 whichever is bigger
+4. Print statistics after each iteration to see how much we are reducing reference bias
+   * Allele balance at het sites — should approach 0.5 as reference bias disappears
+   * Spread of heterozygosity for ref/alt; tight distribution around 0.5 = unbiased
+   * n_dominant_snps (AF>0.5) Proxy for distance from current reference — decreases as iterations converge
+   * n_snps Sanity check on genotype call composition
+   * titv_ratio - Expected 1.5–2.5; outliers flag data quality issues
+   * pct_mapped - Mapping success to the per-individual reference
+5. Specify sex and autosomes, but users should include all major scaffolds for each mapping step.
+
+
+## Original nf-var instructions
 ## Introduction
 
 **nf-varmit** is a bioinformatics pipeline that calls variants iteratively based on a reference. It then filters the resulting variant calls and creates mask files based on sequencing depth or heterozygosity. This is particularly relevant for phylogenetic inference, when the resulting consensus sequences need to reflect variation in coverage to avoid reference bias. This pipeline can easily be integrated in a workflow that includes: [nf-polish](https://github.com/MozesBlom/nf-polish), [nf-umap](https://github.com/IngoMue/nf-umap), nf-var & [nf-phylo](https://github.com/MozesBlom/nf-phylo). Thus, simplifying the bioinformatic task to go from raw short-read sequence data to a phylogenetic hypothesis.
