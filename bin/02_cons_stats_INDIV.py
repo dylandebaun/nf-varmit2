@@ -1,69 +1,43 @@
 #!/usr/bin/env python3
+"""
+02_cons_stats_INDIV.py
+Calculate missing data (N/n/- characters) per chromosome in a per-individual
+consensus FASTA, and write a summary TSV.
 
-#########################
-## Required modules
-#########################
-try:
-	import os
-	import sys
-	import argparse
-	import pandas as pd
-	from Bio import SeqIO
-except ImportError:
-	sys.exit("One of the required modules can't be found...")
+Expected input filenames: <indiv>_<chromo>_cons.fa  (one record per file)
+"""
 
+import os
+import sys
+import argparse
+import pandas as pd
+from Bio import SeqIO
 
-#########################
-## Input - parse arguments
-#########################
-
-parser = argparse.ArgumentParser()
-
-parser.add_argument("-c", "--cons_fn_list", help="List of consensus files --> paths", action = "store", nargs='+', default=[], required=True)
-parser.add_argument("-i", "--individual", help="Individual to which consensus sequences belong", required=True)
-parser.add_argument("-o", "--out_dir", help="Directory to store the tsv file, if unspecified assumes current work dir", default='current', action = "store", required=False)
-
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("-c", "--cons_fn_list", nargs="+", required=True,
+                    help="Per-chromosome consensus FASTA files")
+parser.add_argument("-i", "--individual", required=True,
+                    help="Individual identifier")
+parser.add_argument("-o", "--out_dir", default=".",
+                    help="Output directory (default: current directory)")
 args = parser.parse_args()
 
-## Store variables
-consensus_list = args.cons_fn_list
-indiv = args.individual
-output_path = args.out_dir
-if output_path != 'current':
-	pass
-else:
-	output_path = os.getcwd()
+rows = []
+for fa in args.cons_fn_list:
+    chromo  = os.path.basename(fa).split("_")[1]
+    record  = SeqIO.read(fa, "fasta")
+    length  = len(record.seq)
+    missing = record.seq.count("N") + record.seq.count("n") + record.seq.count("-")
+    rows.append([chromo, length, missing, round(missing / length * 100, 2)])
 
+df = pd.DataFrame(rows, columns=["Chromo", "Length", "Missing_data", "Missing_data_PERCENTAGE"])
 
-#########################
-## Automated Analysis
-#########################
+total_len     = df["Length"].sum()
+total_missing = df["Missing_data"].sum()
+df = pd.concat([df, pd.DataFrame([[
+    "Total", total_len, total_missing,
+    round(total_missing / total_len * 100, 2)
+]], columns=df.columns)], ignore_index=True)
 
-## Create a pandas dataframe with a summary of all the read stats
-df = pd.DataFrame(columns=['Chromo','Length', 'Missing_data', 'Missing_data_PERCENTAGE'])
-
-## Loop over consensus seqs and estimate missing data
-for consensus in consensus_list:
-	chromo = os.path.basename(consensus).split('_')[1]
-	record = SeqIO.read(consensus, "fasta")
-	cons_len = len(record.seq)
-	cons_n = record.seq.count('N') + record.seq.count('n') + record.seq.count('-')
-	cons_n_rel = (float(cons_n)/float(cons_len)) * 100
-	cons_df = pd.DataFrame([[chromo, cons_len, cons_n, cons_n_rel]], columns=['Chromo','Length', 'Missing_data', 'Missing_data_PERCENTAGE'])
-	df = pd.concat([df, cons_df], ignore_index=True)
-
-## Calculate total missing data
-total_len = df['Length'].sum()
-total_n = df['Missing_data'].sum()
-total_n_rel = (float(total_n)/float(total_len)) * 100
-total_df = pd.DataFrame([['Total', total_len, total_n, total_n_rel]], columns=['Chromo','Length', 'Missing_data', 'Missing_data_PERCENTAGE'])
-df = pd.concat([df, total_df], ignore_index=True)
-## Round off by two decimals
-df = df.round({'Missing_data_PERCENTAGE': 2})
-
-## Write out file
-tsv_fn = os.path.join(output_path, (indiv + '_missing_data.tsv'))
-df.to_csv(tsv_fn, sep='\t', index=False)
-
-
-
+out_fn = os.path.join(args.out_dir, f"{args.individual}_missing_data.tsv")
+df.to_csv(out_fn, sep="\t", index=False)
