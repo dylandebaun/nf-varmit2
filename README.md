@@ -22,8 +22,10 @@
    * n_snps Sanity check on genotype call composition
    * titv_ratio - Expected 1.5–2.5; outliers flag data quality issues
    * pct_mapped - Mapping success to the per-individual reference
-5. Specify sex and autosomes, but users should include all major scaffolds for each mapping step.
+5. Specify sex and minimum scaffold length to be considered an autosome (default is 1Mb), but users should include all major scaffolds for each mapping step.
 
+## Time complexity
+For a sample that is 12x coverage, the program took 4+? hours to run with the default 24 cpus per mapping step. BWA-MEM2 is the limiting factor.
 
 ## Original nf-var instructions
 ## Introduction
