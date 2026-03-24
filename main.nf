@@ -796,20 +796,34 @@ workflow iteration {
     depth_thresholds_ch  // [indiv, thresholds_tsv]
 
     main:
-    // Index only distinct references (round 1: one shared ref; later: per-individual)
+    // Round 1: all individuals share the same starting reference → deduplicate before indexing.
+    // Round > 1: each individual has their own per-individual consensus reference.
     def ref_index_input = round == 1
         ? current_indiv_ref_ch.map{ it[1] }.distinct()
         : current_indiv_ref_ch.map{ it[1] }
 
     indexed_ref_ch = ref_index_input | index_ref
 
-    // Build (indiv, ref, bwt, …) by cross-joining on ref path
+    // Join current_indiv_ref_ch with indexed_ref_ch on filename to pair each individual
+    // with their own reference.  Carry ref_indexed (the work-dir staged copy) forward —
+    // NOT ref_orig — so that .fai / .bwt index files are co-located with the FASTA in
+    // every downstream process work directory.
     def indiv_indexed_ref_ch = current_indiv_ref_ch
         .combine(indexed_ref_ch)
-        .filter { indiv, ref, ref2, bwt, zero123, pac, ann, amb, fai ->
-                  ref.getName() == ref2.getName() }
-        .map    { indiv, ref, ref2, bwt, zero123, pac, ann, amb, fai ->
-                  tuple(indiv, ref, bwt, zero123, pac, ann, amb, fai) }
+        .filter { indiv, ref_orig, ref_indexed, bwt, zero123, pac, ann, amb, fai ->
+                  ref_orig.getName() == ref_indexed.getName() }
+        .map    { indiv, ref_orig, ref_indexed, bwt, zero123, pac, ann, amb, fai ->
+                  tuple(indiv, ref_indexed, bwt, zero123, pac, ann, amb, fai) }
+
+    // BUG FIX: derive a keyed (indiv, ref) channel from the INDEXED copy of the ref,
+    // not from current_indiv_ref_ch.  current_indiv_ref_ch carries the original file
+    // path (e.g. params.ref_file in round 1, or the publishDir copy in round > 1).
+    // Passing that path to bcftools/samtools faidx in downstream processes means those
+    // tools look for the .fai index next to the original file — which either doesn't
+    // exist (round 1, original ref may be unindexed) or is the wrong round's index.
+    // Using the staged work-dir copy guarantees the correct index is always present.
+    def indiv_ref_ch = indiv_indexed_ref_ch
+        .map { indiv, ref, bwt, zero123, pac, ann, amb, fai -> tuple(indiv, ref) }
 
     map_input_ch = reads_ch
         .combine(indiv_indexed_ref_ch, by: 0)
@@ -821,7 +835,7 @@ workflow iteration {
 
     def bam_chromo_ref_ch = bam_ch
         .combine(chromos_ch)
-        .combine(current_indiv_ref_ch, by: 0)
+        .combine(indiv_ref_ch, by: 0)
         .map { indiv, rnd, bam, bai, chromo, ref ->
             tuple(indiv, rnd, bam, bai, chromo, ref)
         }
@@ -853,10 +867,11 @@ workflow iteration {
 
     cov_mask_ch = mask_cov(bam_chromo_ref_thresh_ch)
 
-    // Build dominant-allele consensus for use as next-round reference
+    // Build dominant-allele consensus for use as next-round reference.
+    // Use indiv_ref_ch (staged, indexed copy) so samtools faidx finds the .fai.
     iter_cons_input_ch = vars_ch
         .combine(cov_mask_ch, by: [0, 1, 2])
-        .combine(current_indiv_ref_ch, by: 0)
+        .combine(indiv_ref_ch, by: 0)
         .map { indiv, rnd, chromo, vcf, cov_mask, ref ->
             tuple(indiv, rnd, chromo, vcf, cov_mask, ref)
         }
@@ -964,18 +979,26 @@ workflow {
         log.info "  FINAL ROUND (round ${rounds})"
         log.info "===================================="
 
-        // Index per-individual references for the final round
+        // Index per-individual references for the final round.
+        // Each individual has a uniquely named consensus ref from the last intermediate
+        // round, so no .distinct() is needed or wanted here.
         def final_indexed_ref_ch = final_inter_ref
             .map { indiv, ref -> ref }
-            .distinct()
             | index_ref
 
+        // BUG FIX (same as iteration workflow): carry the staged, indexed ref path forward —
+        // NOT final_inter_ref — so .fai / .bwt files are co-located in every process work dir.
         def final_indiv_indexed_ref_ch = final_inter_ref
             .combine(final_indexed_ref_ch)
-            .filter { indiv, ref, ref2, bwt, zero123, pac, ann, amb, fai ->
-                      ref.getName() == ref2.getName() }
-            .map    { indiv, ref, ref2, bwt, zero123, pac, ann, amb, fai ->
-                      tuple(indiv, ref, bwt, zero123, pac, ann, amb, fai) }
+            .filter { indiv, ref_orig, ref_indexed, bwt, zero123, pac, ann, amb, fai ->
+                      ref_orig.getName() == ref_indexed.getName() }
+            .map    { indiv, ref_orig, ref_indexed, bwt, zero123, pac, ann, amb, fai ->
+                      tuple(indiv, ref_indexed, bwt, zero123, pac, ann, amb, fai) }
+
+        // Keyed (indiv, ref) channel using the staged copy — used for all downstream
+        // processes that need the reference FASTA (variant calling, consensus, masking).
+        def final_indiv_ref_ch = final_indiv_indexed_ref_ch
+            .map { indiv, ref, bwt, zero123, pac, ann, amb, fai -> tuple(indiv, ref) }
 
         def map_input_ch = reads_ch
             .combine(final_indiv_indexed_ref_ch, by: 0)
@@ -987,7 +1010,7 @@ workflow {
 
         def bam_chromo_ref_ch = bam_ch
             .combine(chromos_ch)
-            .combine(final_inter_ref, by: 0)
+            .combine(final_indiv_ref_ch, by: 0)
             .map { indiv, rnd, bam, bai, chromo, ref ->
                 tuple(indiv, rnd, bam, bai, chromo, ref)
             }
@@ -1058,14 +1081,14 @@ workflow {
             if (params.mask_hets || params.mask_cov) {
                 def vars_mask_ref_ch = vars_filt_ch
                     .combine(mask_fn_ch, by: [0, 1, 2])
-                    .combine(final_inter_ref, by: 0)
+                    .combine(final_indiv_ref_ch, by: 0)
                     .map { indiv, rnd, chromo, vcf, mask, ref ->
                         tuple(indiv, rnd, chromo, vcf, mask, ref)
                     }
                 consensus_ch = call_consensus_MASK(vars_mask_ref_ch)
             } else {
                 def vcf_ref_ch = vars_filt_ch
-                    .combine(final_inter_ref, by: 0)
+                    .combine(final_indiv_ref_ch, by: 0)
                     .map { indiv, rnd, chromo, vcf, ref ->
                         tuple(indiv, rnd, chromo, vcf, ref)
                     }
@@ -1078,7 +1101,7 @@ workflow {
             if (params.mask_cov) {
                 def vcf_covmask_ref_ch = vars_filt_ch
                     .combine(mask_fn_ch, by: [0, 1, 2])
-                    .combine(final_inter_ref, by: 0)
+                    .combine(final_indiv_ref_ch, by: 0)
                     .map { indiv, rnd, chromo, vcf, mask, ref ->
                         tuple(indiv, rnd, chromo, vcf, mask, ref)
                     }
@@ -1086,7 +1109,7 @@ workflow {
                 call_consensus_iupac_MASK(vcf_covmask_ref_ch)
             } else {
                 def vcf_ref_extra_ch = vars_filt_ch
-                    .combine(final_inter_ref, by: 0)
+                    .combine(final_indiv_ref_ch, by: 0)
                     .map { indiv, rnd, chromo, vcf, ref ->
                         tuple(indiv, rnd, chromo, vcf, ref)
                     }
