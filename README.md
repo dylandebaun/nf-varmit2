@@ -7,7 +7,7 @@
    Requires: Nextflow 22.10+ for repeated process invocations in one workflow
 2. The intermediate round filtering differs from the final round:
 * Intermediate rounds build a true consensus (mosaic of 2 different genome) - filter vcf for SNPs that pass depth/imbalance filter, pick the best supported/dominant heterozygous allele (AF >= 0.5), sites with no passed SNPs use the reference allele
-* Last round, only calls (variant + non-variant) that pass the filters will be used, other sites are masked as missing data. Mask or keep heterozygous sites (if kept chooses dominant allele with AF > 0.5). Keep or filter indels.
+* Last round, only calls (variant + non-variant) that pass the filters will be used, other sites are masked as missing data. Mask or keep heterozygous sites (if kept chooses dominant allele with AF > 0.5). Keep or filter indels. *Note* that with each round you are creating a reference that looks more similar to the reads nad thus increase the amount of heteroxygous sites identified. The ratio of heterozygous to homozygous alternative variants increased in my samples from 0.11 to 0.28 after just one iteration.
 3. Depth threshold variance. The depth threshold will be calculated from the sample 
    * MAXIMUM:
    autosomes = max_depth_autosomes * 2
@@ -25,7 +25,7 @@
 5. Specify sex and minimum scaffold length to be considered an autosome (default is 1Mb), but users should include all major scaffolds for each mapping step.
 
 ## Time complexity
-For a sample that is 12x coverage, the program took 4+? hours to run with the default 24 cpus per mapping step. BWA-MEM2 is the limiting factor.
+For a sample that is 12x coverage, the program took 22 hours to run with the default 24 cpus per mapping step. BWA-MEM2 is the limiting factor.
 
 ## Original nf-var instructions
 ## Introduction
