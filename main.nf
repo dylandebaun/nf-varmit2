@@ -102,6 +102,8 @@ process index_ref {
 
     label 'Mapping'
     tag "${reference.simpleName}"
+    publishDir "${params.outputdir}/08.ref_indexes", mode: 'copy',
+               saveAs: { fn -> "${reference.simpleName}/${fn}" }
 
     input:
     path reference
@@ -116,9 +118,22 @@ process index_ref {
           path("${reference}.fai")
 
     script:
+    def idx_dir = "${params.outputdir}/08.ref_indexes/${reference.simpleName}"
     """
-    samtools faidx ${reference}
-    bwa-mem2 index ${reference}
+    if [ -f "${idx_dir}/${reference}.bwt.2bit.64" ] && \
+       [ -f "${idx_dir}/${reference}.fai" ]; then
+        echo "[checkpoint] Index found for ${reference.simpleName}, symlinking from ${idx_dir}"
+        ln -sf ${idx_dir}/${reference}.bwt.2bit.64 .
+        ln -sf ${idx_dir}/${reference}.0123 .
+        ln -sf ${idx_dir}/${reference}.pac .
+        ln -sf ${idx_dir}/${reference}.ann .
+        ln -sf ${idx_dir}/${reference}.amb .
+        ln -sf ${idx_dir}/${reference}.fai .
+    else
+        echo "[checkpoint] Indexing ${reference.simpleName}"
+        samtools faidx ${reference}
+        bwa-mem2 index ${reference}
+    fi
     """
 }
 
@@ -142,11 +157,19 @@ process bwa_map {
     tuple val(individual), val(round), path("${individual}.bam"), path("${individual}.bam.bai")
 
     script:
+    def bam_out = "${params.outputdir}/01.bams/${individual}_round${round}.bam"
+    def bai_out = "${params.outputdir}/01.bams/${individual}_round${round}.bai"
     """
-    bwa-mem2 mem -t ${task.cpus} ${reference} ${read1} ${read2} \
-        | samtools sort -@ ${task.cpus} -m 2G -o ${individual}.bam
-
-    samtools index -@ ${task.cpus} ${individual}.bam
+    if [ -f "${bam_out}" ] && [ -f "${bai_out}" ]; then
+        echo "[checkpoint] BAM found for ${individual} round ${round}, symlinking"
+        ln -sf ${bam_out} ${individual}.bam
+        ln -sf ${bai_out} ${individual}.bam.bai
+    else
+        echo "[checkpoint] Mapping ${individual} round ${round}"
+        bwa-mem2 mem -t ${task.cpus} ${reference} ${read1} ${read2} \
+            | samtools sort -@ ${task.cpus} -m 2G -o ${individual}.bam
+        samtools index -@ ${task.cpus} ${individual}.bam
+    fi
     """
 }
 
@@ -181,7 +204,7 @@ process cov_summary_INDIV {
 
     script:
     """
-    python \$NF_VARMIT_BIN/00_cov_stats_INDIV.py \
+    00_cov_stats_INDIV.py \
       -c ${chromo_cov_tsv_list} \
       -i ${indiv}
     """
@@ -200,7 +223,7 @@ process cov_summary_ALL {
 
     script:
     """
-    python \$NF_VARMIT_BIN/01_cov_stats_SUMMARY.py \
+    01_cov_stats_SUMMARY.py \
       -c ${indivs_cov_tsv_list} \
       -s ${params.sex_chromos} \
       -p ${params.plots_per_row}
@@ -222,7 +245,7 @@ process calc_depth_thresholds {
 
     script:
     """
-    python \$NF_VARMIT_BIN/00_calc_depth_thresholds.py \
+    00_calc_depth_thresholds.py \
       -c ${chromo_cov_tsv_list} \
       -i ${individual} \
       -s ${params.sex_chromos} \
@@ -248,12 +271,19 @@ process call_variants_CHROMO {
     tuple val(individual), val(round), val(chromo), path("${chromo}_vars_filt.vcf.gz")
 
     script:
+    def vcf_out = "${params.outputdir}/02.variants/${individual}/round${round}/${chromo}_vars_filt.vcf.gz"
     """
-    freebayes -f ${reference} --region ${chromo} -m 10 -p 2 ${indiv_bam} | \
-      vcffilter -f "QUAL < ${params.qual_min}" \
-                -f "( AB > 0 ) & ( AB < ${params.min_ab} )" --invert --or | \
-      vcfallelicprimitives -k -g | \
-      bgzip -c > ${chromo}_vars_filt.vcf.gz
+    if [ -f "${vcf_out}" ]; then
+        echo "[checkpoint] VCF found for ${individual} ${chromo} round ${round}, symlinking"
+        ln -sf ${vcf_out} ${chromo}_vars_filt.vcf.gz
+    else
+        echo "[checkpoint] Calling variants for ${individual} ${chromo} round ${round}"
+        freebayes -f ${reference} --region ${chromo} -m 10 -p 2 ${indiv_bam} | \
+          vcffilter -f "QUAL < ${params.qual_min}" \
+                    -f "( AB > 0 ) & ( AB < ${params.min_ab} )" --invert --or | \
+          vcfallelicprimitives -k -g | \
+          bgzip -c > ${chromo}_vars_filt.vcf.gz
+    fi
     """
 }
 
@@ -270,10 +300,17 @@ process remove_indels {
     tuple val(individual), val(round), val(chromo), path("${chromo}_vars_filt_noindels.vcf.gz")
 
     script:
+    def vcf_out = "${params.outputdir}/02.variants/${individual}/round${round}/${chromo}_vars_filt_noindels.vcf.gz"
     """
-    bgzip -d -c ${var_vcf} | \
-      vcffilter -f 'TYPE = ins' -f 'TYPE = del' -f 'TYPE = complex' --invert --or | \
-      bgzip -c > ${chromo}_vars_filt_noindels.vcf.gz
+    if [ -f "${vcf_out}" ]; then
+        echo "[checkpoint] No-indels VCF found for ${individual} ${chromo} round ${round}, symlinking"
+        ln -sf ${vcf_out} ${chromo}_vars_filt_noindels.vcf.gz
+    else
+        echo "[checkpoint] Removing indels for ${individual} ${chromo} round ${round}"
+        bgzip -d -c ${var_vcf} | \
+          vcffilter -f 'TYPE = ins' -f 'TYPE = del' -f 'TYPE = complex' --invert --or | \
+          bgzip -c > ${chromo}_vars_filt_noindels.vcf.gz
+    fi
     """
 }
 
@@ -375,16 +412,11 @@ process build_iter_consensus {
     script:
     if (round == 1) {
         """
-        sed 's/ /\\t/g' ${cov_mask} > bad_positions.tsv
-
-        bgzip -d -c ${vcf_fn} | \
-          awk 'NR==FNR {bad[\$1"\\t"\$2]=1; next}
-               /^#/   {print; next}
-               !(\$1"\\t"\$2 in bad)' \
-          bad_positions.tsv - | \
-          vcffilter -f 'AF >= 0.5' | \
-          bgzip -c > ${chromo}_dominant.vcf.gz
-
+	bgzip -d -c ${vcf_fn} | \
+  	  awk 'NR==FNR { bad[\$1 FS \$2] = 1; next } 
+       		/^#/    { print; next } 
+       		!(\$1 FS \$2 in bad)' ${cov_mask} - | \
+	  bcftools view -i 'INFO/AF >= 0.5' -Oz -o ${chromo}_dominant.vcf.gz
         tabix -p vcf ${chromo}_dominant.vcf.gz
 
         samtools faidx ${reference} ${chromo} | \
@@ -430,13 +462,18 @@ process build_ref_from_consensus {
     tuple val(individual), val(round), path("${individual}_round${round}_ref.fa")
 
     script:
+    def ref_out = "${params.outputdir}/04.consensus_refs/${individual}/${individual}_round${round}_ref.fa"
     """
-    cat ${cons_list} > tmp.fa
-
-    awk '/^>/ { print; next } { gsub(/[^ACGTacgt]/, "N"); print }' \
-      tmp.fa > ${individual}_round${round}_ref.fa
-
-    rm tmp.fa
+    if [ -f "${ref_out}" ]; then
+        echo "[checkpoint] Consensus ref found for ${individual} round ${round}, symlinking"
+        ln -sf ${ref_out} ${individual}_round${round}_ref.fa
+    else
+        echo "[checkpoint] Building consensus ref for ${individual} round ${round}"
+        cat ${cons_list} > tmp.fa
+        awk '/^>/ { print; next } { gsub(/[^ACGTacgt]/, "N"); print }' \
+          tmp.fa > ${individual}_round${round}_ref.fa
+        rm tmp.fa
+    fi
     """
 }
 
@@ -455,24 +492,32 @@ process call_consensus {
     tuple val(individual), val(round), val(chromo), path("${individual}_${chromo}_cons.fa")
 
     script:
+    def cons_out = "${params.outputdir}/03.consensus/${individual}/${individual}_${chromo}_cons.fa"
     if (round == 1) {
         """
-        tabix -p vcf ${vcf_fn}
-
-        samtools faidx ${reference} ${chromo} | \
-          bcftools consensus ${vcf_fn} -o ${individual}_${chromo}_cons.fa
+        if [ -f "${cons_out}" ]; then
+            echo "[checkpoint] Consensus found for ${individual} ${chromo}, symlinking"
+            ln -sf ${cons_out} ${individual}_${chromo}_cons.fa
+        else
+            tabix -p vcf ${vcf_fn}
+            samtools faidx ${reference} ${chromo} | \
+              bcftools consensus ${vcf_fn} -o ${individual}_${chromo}_cons.fa
+        fi
         """
     } else {
         """
-        tabix -p vcf ${vcf_fn}
-
-        bcftools +fixref ${vcf_fn} -Oz -o ${chromo}_fixed.vcf.gz -- \
-          -f ${reference} -m flip -d
-        tabix -p vcf ${chromo}_fixed.vcf.gz
-
-        samtools faidx ${reference} ${chromo} | \
-          bcftools consensus ${chromo}_fixed.vcf.gz \
-            -o ${individual}_${chromo}_cons.fa
+        if [ -f "${cons_out}" ]; then
+            echo "[checkpoint] Consensus found for ${individual} ${chromo}, symlinking"
+            ln -sf ${cons_out} ${individual}_${chromo}_cons.fa
+        else
+            tabix -p vcf ${vcf_fn}
+            bcftools +fixref ${vcf_fn} -Oz -o ${chromo}_fixed.vcf.gz -- \
+              -f ${reference} -m flip -d
+            tabix -p vcf ${chromo}_fixed.vcf.gz
+            samtools faidx ${reference} ${chromo} | \
+              bcftools consensus ${chromo}_fixed.vcf.gz \
+                -o ${individual}_${chromo}_cons.fa
+        fi
         """
     }
 }
@@ -490,25 +535,33 @@ process call_consensus_MASK {
     tuple val(individual), val(round), val(chromo), path("${individual}_${chromo}_cons.fa")
 
     script:
+    def cons_out = "${params.outputdir}/03.consensus/${individual}/${individual}_${chromo}_cons.fa"
     if (round == 1) {
         """
-        tabix -p vcf ${vcf_fn}
-
-        samtools faidx ${reference} ${chromo} | \
-          bcftools consensus ${vcf_fn} -m ${mask_fn} \
-            -o ${individual}_${chromo}_cons.fa
+        if [ -f "${cons_out}" ]; then
+            echo "[checkpoint] Consensus found for ${individual} ${chromo}, symlinking"
+            ln -sf ${cons_out} ${individual}_${chromo}_cons.fa
+        else
+            tabix -p vcf ${vcf_fn}
+            samtools faidx ${reference} ${chromo} | \
+              bcftools consensus ${vcf_fn} -m ${mask_fn} \
+                -o ${individual}_${chromo}_cons.fa
+        fi
         """
     } else {
         """
-        tabix -p vcf ${vcf_fn}
-
-        bcftools +fixref ${vcf_fn} -Oz -o ${chromo}_fixed.vcf.gz -- \
-          -f ${reference} -m flip -d
-        tabix -p vcf ${chromo}_fixed.vcf.gz
-
-        samtools faidx ${reference} ${chromo} | \
-          bcftools consensus ${chromo}_fixed.vcf.gz -m ${mask_fn} \
-            -o ${individual}_${chromo}_cons.fa
+        if [ -f "${cons_out}" ]; then
+            echo "[checkpoint] Consensus found for ${individual} ${chromo}, symlinking"
+            ln -sf ${cons_out} ${individual}_${chromo}_cons.fa
+        else
+            tabix -p vcf ${vcf_fn}
+            bcftools +fixref ${vcf_fn} -Oz -o ${chromo}_fixed.vcf.gz -- \
+              -f ${reference} -m flip -d
+            tabix -p vcf ${chromo}_fixed.vcf.gz
+            samtools faidx ${reference} ${chromo} | \
+              bcftools consensus ${chromo}_fixed.vcf.gz -m ${mask_fn} \
+                -o ${individual}_${chromo}_cons.fa
+        fi
         """
     }
 }
@@ -693,7 +746,7 @@ process calc_missing_data_INDIV {
 
     script:
     """
-    python \$NF_VARMIT_BIN/02_cons_stats_INDIV.py \
+    02_cons_stats_INDIV.py \
       -c ${cons_fn_list} \
       -i ${individual}
     """
@@ -715,7 +768,7 @@ process calc_missing_data_SUMMARY {
     """
     unset DISPLAY
 
-    python \$NF_VARMIT_BIN/03_cons_stats_SUMMARY.py \
+    03_cons_stats_SUMMARY.py \
       -c ${cons_fn_list}
     """
 }
@@ -736,7 +789,7 @@ process calc_iter_stats {
 
     script:
     """
-    python \$NF_VARMIT_BIN/01_iter_stats.py \
+    01_iter_stats.py \
       -v ${vcf_list} \
       -b ${indiv_bam} \
       -i ${individual} \
@@ -1133,3 +1186,5 @@ workflow {
     // ── Cross-round reference-bias summary ────────────────────────────────────
     all_iter_stats_ch.collect() | iter_stats_summary
 }
+
+
